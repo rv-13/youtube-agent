@@ -1,4 +1,4 @@
-
+import time
 import streamlit as st
 import re
 import subprocess
@@ -17,11 +17,11 @@ st.set_page_config(
     page_title="YouTube Agent",
     page_icon="🎬",
     layout="wide",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="expanded"
 )
 
 nlp = spacy.load("en_core_web_sm")
-whisper_model = whisper.load_model("tiny")
+
 
 
 def get_video_file():
@@ -35,7 +35,27 @@ def get_video_file():
 
     raise FileNotFoundError("No video file found")
 
+def get_video_duration(video_path):
 
+    cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        video_path
+    ]
+
+    result = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True
+    )
+
+    return float(result.stdout.strip())
 
 def clean_youtube_url(url):
 
@@ -64,7 +84,7 @@ def extract_video_id(url):
 
     raise ValueError("Invalid YouTube URL")
 
-def get_transcript():
+def get_transcript(whisper_model):
 
     result = whisper_model.transcribe(
         "audio.mp3",
@@ -233,14 +253,35 @@ def download_video(url):
 
     return str(downloaded_files[0])
 
+    
 
+def extract_audio(video_path, processing_limit):
 
-def extract_audio(video_path):
+    duration_seconds = None
+
+    if processing_limit == "3 min":
+        duration_seconds = "180"
+
+    elif processing_limit == "5 min":
+        duration_seconds = "300"
+
+    elif processing_limit == "10 min":
+        duration_seconds = "600"
 
     cmd = [
         "ffmpeg",
         "-i",
         video_path,
+    ]
+
+    if duration_seconds:
+
+        cmd.extend([
+            "-t",
+            duration_seconds
+        ])
+
+    cmd.extend([
 
         "-vn",
 
@@ -253,11 +294,9 @@ def extract_audio(video_path):
         "audio.mp3",
 
         "-y"
-    ]
+    ])
 
     subprocess.run(cmd)
-
-
 
 def calculate_audio_energy(start, end):
 
@@ -300,7 +339,7 @@ def rank_segments(segments):
 
 
 
-def cut_clip(video_path, start, end, index):
+def cut_clip(video_path,start,end,index,output_quality):
 
     duration = end - start
 
@@ -311,6 +350,19 @@ def cut_clip(video_path, start, end, index):
     end_label = f"{int(end//60):02d}m{int(end%60):02d}s"
 
     output = f"clip_{start_label}_{end_label}_{timestamp}.mp4"
+
+    preset = "ultrafast"
+    bitrate = "3M"
+
+    if output_quality == "Balanced":
+
+        preset = "medium"
+        bitrate = "5M"
+
+    elif output_quality == "High":
+
+        preset = "slow"
+        bitrate = "8M"
 
     cmd = [
         "ffmpeg",
@@ -333,10 +385,10 @@ def cut_clip(video_path, start, end, index):
         "h264_videotoolbox",
 
         "-preset",
-        "ultrafast",
+        preset,
 
         "-b:v",
-        "3M",
+        bitrate,
 
         "-c:a",
         "aac",
@@ -355,7 +407,48 @@ def cut_clip(video_path, start, end, index):
     return output
 
 
-st.title("🎬 YouTube Most Engaging Clip Agent")
+st.title(
+    "🎬 AI YouTube Shorts Factory"
+)
+
+st.caption(
+    "Discovering viral moments and generate Shorts automatically"
+)
+st.sidebar.title("⚙️ Settings")
+
+max_clips = st.sidebar.slider(
+    "🎬 Number of Clips",
+    min_value=1,
+    max_value=5,
+    value=1
+)
+processing_limit = st.sidebar.selectbox(
+    "⏱ Processing Duration",
+    [
+        "3 min",
+        "5 min",
+        "10 min",
+        "Full Video"
+    ],
+    index=1
+)
+whisper_choice = st.sidebar.selectbox(
+    "🧠 Whisper Model",
+    [
+        "tiny",
+        "base"
+    ],
+    index=0
+)
+output_quality = st.sidebar.selectbox(
+    "🎥 Output Quality",
+    [
+        "Fast",
+        "Balanced",
+        "High"
+    ],
+    index=0
+)
 
 query_params = st.query_params
 
@@ -384,24 +477,118 @@ duration_options = st.multiselect(
 
 if st.button("Generate Clips"):
 
+    if not url.strip():
+
+        st.warning("Please paste a YouTube URL")
+
+        st.stop()
+
     with st.spinner("Processing video..."):
-        
-        st.write("📥 Downloading video...")
+
+        progress_bar = st.progress(0)
+
+        status_text = st.empty()
+
+        timer_text = st.empty()
+
+        status_text.write(
+            f"🧠 Loading Whisper model: {whisper_choice}"
+        )
+
+        whisper_model = whisper.load_model(
+            whisper_choice
+        )
+
+        status_text.write("📥 Downloading video...")
+
+        progress_bar.progress(15)
+
         video_path = download_video(url)
 
-        st.write("🎵 Extracting audio...")
-        extract_audio(video_path)
+        video_duration = get_video_duration(video_path)
 
-        transcript = get_transcript()
+        estimated_seconds = int(video_duration * 0.15)
+        start_time = time.time()
+
+        status_text.write("🎵 Extracting audio...")
+
+        progress_bar.progress(35)
+
+        extract_audio(video_path, processing_limit)
+
+        elapsed = int(time.time() - start_time)
+
+        remaining = max(
+            estimated_seconds - elapsed,
+            0
+        )
+
+        mins = remaining // 60
+        secs = remaining % 60
+
+        status_text.write(
+            "🧠 AI transcribing video..."
+        )
+
+        timer_text.info(
+            f"⏳ Estimated time left: {mins}m {secs}s"
+        )
+
+        progress_bar.progress(55)
+        
+        for remaining in range(
+            estimated_seconds,
+            0,
+            -1
+        ):
+
+            mins = remaining // 60
+            secs = remaining % 60
+
+            timer_text.info(
+                f"⏳ Estimated time left: {mins}m {secs}s"
+            )
+
+            time.sleep(1)
+
+            if remaining <= estimated_seconds - 5:
+                break
+
+        transcript = get_transcript(whisper_model)
+
+        if not transcript:
+            st.error(
+                "Transcript generation failed"
+            )
+
+            st.stop()
+
+        status_text.write(
+            "🔥 Detecting viral moments..."
+        )
+
+        progress_bar.progress(75)
 
         segments = segment_transcript(transcript)
 
         ranked_segments = rank_segments(segments)
+    
+        if not ranked_segments:
+            st.error(
+                "No engaging clips found"
+            )
+
+            st.stop()
 
         top_segments = random.sample(
-            ranked_segments[:5],
-            1
+            ranked_segments[:max_clips],
+            min(max_clips, len(ranked_segments))
+        )   
+        status_text.write(
+            "✂️ Generating clips..."
         )
+
+        progress_bar.progress(90)
 
         for i, segment in enumerate(top_segments):
 
@@ -436,7 +623,8 @@ if st.button("Generate Clips"):
                     video_path,
                     clip_start,
                     clip_end,
-                    f"{i}_{duration_label}"
+                    f"{i}_{duration_label}",
+                    output_quality
                 )
 
                 st.markdown("---")
@@ -477,4 +665,11 @@ if st.button("Generate Clips"):
                     mime="video/mp4"
                 )
 
+    progress_bar.progress(100)
+
+    timer_text.empty()
+
+    status_text.write(
+        "✅ Clips generated successfully!"
+    )
     st.success("Done!")
